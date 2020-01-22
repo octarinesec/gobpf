@@ -199,15 +199,10 @@ func (bpf *Module) LoadUprobe(name string) (int, error) {
 
 // Load a program.
 func (bpf *Module) Load(name string, progType int, logLevel, logSize uint) (int, error) {
-	fd, ok := bpf.funcs[name]
-	if ok {
-		return fd, nil
-	}
 	fd, err := bpf.load(name, progType, logLevel, logSize)
 	if err != nil {
 		return -1, err
 	}
-	bpf.funcs[name] = fd
 	return fd, nil
 }
 
