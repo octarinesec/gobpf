@@ -23,7 +23,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/octarinesec/gobpf/pkg/cpuonline"
+	"github.com/iovisor/gobpf/pkg/cpuonline"
 )
 
 /*
@@ -31,6 +31,17 @@ import (
 #cgo LDFLAGS: -lbcc
 #include <bcc/bcc_common.h>
 #include <bcc/libbpf.h>
+#include <sys/socket.h>
+
+int bpf_attach_socket(int sock, int fd)
+{
+	return setsockopt(sock, SOL_SOCKET, SO_ATTACH_BPF, &fd, sizeof(fd));
+}
+
+int bpf_detach_socket(int sock, int fd)
+{
+	return setsockopt(sock, SOL_SOCKET, SO_DETACH_BPF, &fd, sizeof(fd));
+}
 */
 import "C"
 
@@ -197,8 +208,27 @@ func (bpf *Module) LoadUprobe(name string) (int, error) {
 	return bpf.Load(name, C.BPF_PROG_TYPE_KPROBE, 0, 0)
 }
 
+// LoadSocketFilter loads a program of type BPF_PROG_TYPE_SOCKET_FILTER
+func (bpf *Module) LoadSocketFilter(name string) (int, error) {
+	return bpf.Load(name, C.BPF_PROG_TYPE_SOCKET_FILTER, 0, 0)
+}
+
 // Load a program.
 func (bpf *Module) Load(name string, progType int, logLevel, logSize uint) (int, error) {
+	fd, ok := bpf.funcs[name]
+	if ok {
+		return fd, nil
+	}
+	fd, err := bpf.load(name, progType, logLevel, logSize)
+	if err != nil {
+		return -1, err
+	}
+	bpf.funcs[name] = fd
+	return fd, nil
+}
+
+// Load a program on different FDs.
+func (bpf *Module) LoadMany(name string, progType int, logLevel, logSize uint) (int, error) {
 	fd, err := bpf.load(name, progType, logLevel, logSize)
 	if err != nil {
 		return -1, err
@@ -486,6 +516,39 @@ func (bpf *Module) TableIter() <-chan map[string]interface{} {
 		close(ch)
 	}()
 	return ch
+}
+
+// AttachSocketFilter
+func (bpf *Module) AttachSocketFilter(progFd int, sockFd int) error {
+	res, err := C.bpf_attach_socket(C.int(sockFd), C.int(progFd))
+	if res != 0 {
+		return fmt.Errorf("error attaching BPF socket filter: %v", err)
+	}
+	return err
+}
+
+// DetachSocketFilter
+func (bpf *Module) DetachSocketFilter(progFd int, sockFd int) error {
+	res, err := C.bpf_detach_socket(C.int(sockFd), C.int(progFd))
+	if res != 0 {
+		return fmt.Errorf("error detaching BPF socket filter: %v", err)
+	}
+	return nil
+}
+
+func (bpf *Module) openRawSocket(devName string) (int, error) {
+	devNameCS := C.CString(devName)
+	defer C.free(unsafe.Pointer(devNameCS))
+	sockFd, err := C.bpf_open_raw_sock(devNameCS)
+	if sockFd == -1 {
+		return -1, fmt.Errorf("failed to open raw socket %v: %v", devName, err)
+	}
+	return int(sockFd), nil
+}
+
+// OpenRawSocket
+func (bpf *Module) OpenRawSocket(devName string) (int, error) {
+  return bpf.openRawSocket(devName)
 }
 
 func (bpf *Module) attachXDP(devName string, fd int, flags uint32) error {
